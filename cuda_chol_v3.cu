@@ -37,8 +37,10 @@ void print_matrix(const Matrix);
 
 int check_if_symmetric(const Matrix M);
 
+void gpu_time(clock_t* time_use);
+
 // 这里选择的是输出上三角矩阵L
-__global__ void chol_kernel(double * U)
+__global__ void chol_kernel(double * U,clock_t* time)
 {
 	// const int tid = threadIdx.x;
 	// const int size = U.num_rows / THREAD_NUM;
@@ -62,6 +64,7 @@ __global__ void chol_kernel(double * U)
 	int tx = tid+bid*THREAD_NUM;
 	unsigned int i,j,k;
 	unsigned int num_rows = MATRIX_SIZE;
+	if(tid == 0) time[bid] = clock();
 	for (k =0;k<num_rows;k++)
 	{
 		if (tx == 0)
@@ -94,8 +97,8 @@ __global__ void chol_kernel(double * U)
 	{
 		for (j=0;j<i;j++)
 			U[i*num_rows+j] = 0.0;
-	}
-
+	}	
+	if(tid == 0) time[bid + BLOCK_NUM] = clock(); 
 }
 
 
@@ -115,13 +118,24 @@ int main()
 
 	Matrix d_A = allocate_matrix_on_gpu(A);
 	copy_matrix_to_device(d_A,A);
-	chol_kernel<<<grid,thread_block>>>(d_A.elements);
+	
+	clock_t* time;	
+	cudaMalloc((void**)&time,sizeof(clock_t)*BLOCK_NUM*2);
+
+	chol_kernel<<<grid,thread_block>>>(d_A.elements,time);
 	cudaDeviceSynchronize();
 	copy_matrix_from_device(A,d_A);
 	print_matrix(A);
+        
+	clock_t* time_use;
+	time_use = (clock_t*)malloc(sizeof(clock_t)*BLOCK_NUM*2);
+	cudaMemcpy(time_use,time,sizeof(clock_t)*BLOCK_NUM*2,cudaMemcpyDeviceToHost);
+	gpu_time(time_use);
 	
 	cudaFree(d_A.elements);
+	cudaFree(time);
 	free(A.elements);
+	free(time_use);
 
 	return 0;
 }
@@ -291,10 +305,16 @@ int check_if_symmetric(const Matrix M)
 }
 
 
-
-
-
-
-
-
-
+// 把每个block最早的开始时间和最晚的结束时间相减，取得总运行时间
+void gpu_time(clock_t* time_use)
+{
+	clock_t min_start = time_use[0];
+	clock_t max_end = time_use[BLOCK_NUM];
+	for (int i=0;i<BLOCK_NUM;i++)
+	{
+		if(time_use[i]<min_start) min_start = time_use[i];
+		if(time_use[i+BLOCK_NUM]>max_end) max_end = time_use[BLOCK_NUM+i]; 
+	}
+	clock_t output = max_end-min_start;
+	printf("GPU_time:%ld\n", output);
+}
